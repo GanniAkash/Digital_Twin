@@ -1,26 +1,33 @@
 import bpy
 import numpy as np
 import math
+import time
 import mathutils 
 import csv
+import bmesh
+from mathutils.bvhtree import BVHTree
 
 output_path = bpy.path.abspath('//uma_signal_strength.csv')
 
 
 c = 3e8  # Speed of light (m/s)
-frequency = 5 # Frequency in Hz (example: 2.4 GHz for Wi-Fi)
+frequency = 2.5e9 # Frequency in Hz (example: 2.4 GHz for Wi-Fi)
 tx_pow = 35  # Transmitter (cell tower) gain in dBi
 rx_gain = 0  # Receiver (mobile) gain in dBi
-beamwidth = 90  # Antenna beamwidth in degrees
+beamwidth = 30  # Antenna beamwidth in degrees
 
 
-h_bs = 25  # Base station antenna height in meters
+h_bs = 6  # Base station antenna height in meters
 h_ut = 1.5  # User terminal (receiver) antenna height in meters
 distance_breakpoint = 4 * h_bs * h_ut * frequency / c  # Breakpoint distance
 
 
-transmitter_pos = np.array([138, -33, 25])
+transmitter_pos = np.array([138, -33, h_bs])
+
+
+
 transmitter_orientation = np.array([119.7, -95.079, 0])
+
 
 def clear_previous_debug_lines(name):
     
@@ -28,8 +35,9 @@ def clear_previous_debug_lines(name):
         if obj.name.startswith(name):
             bpy.data.objects.remove(obj, do_unlink=True)
             
-clear_previous_debug_lines("HighlightMaterial")
-clear_previous_debug_lines("DenugLine")
+clear_previous_debug_lines("HighlightSphere")
+clear_previous_debug_lines("DebugLine")
+
 
 def uma_path_loss_los(distance, frequency):
     if distance == 0:
@@ -121,9 +129,18 @@ def yagi_signal_strength(theta, phi):
         return tx_pow + 10 * np.log10(side_lobe_gain)
     else:  # Nulls
         return tx_pow + 10 * np.log10(null_gain)
+    
+def get_mesh(obj, depsgraph):
+    """Convert an object to a temporary mesh (if not already a mesh)."""
+    if obj.type == 'MESH':
+        return obj.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
+    else:
+        return obj.to_mesh(depsgraph=depsgraph)
 
 
-def is_los(transmitter_pos, receiver_pos, ground_obj_name):
+
+
+def is_los(transmitter_pos, receiver_pos, ground_obj_name, bvh):
 
     transmitter_pos = mathutils.Vector(transmitter_pos)
     receiver_pos = mathutils.Vector(receiver_pos)
@@ -134,34 +151,32 @@ def is_los(transmitter_pos, receiver_pos, ground_obj_name):
     direction_normalized = direction.normalized()
     
    
-    depsgraph = bpy.context.evaluated_depsgraph_get()
+    
 
   
-    hit, location, normal, index, obj, matrix = bpy.context.scene.ray_cast(
-        depsgraph, transmitter_pos, direction_normalized, distance=distance
-    )
+#    hit, location, normal, index, obj, matrix = bpy.context.scene.ray_cast(
+#        depsgraph, transmitter_pos, direction_normalized, distance=distance
+#    )
+    
+    hit, location, normal, index = bvh.ray_cast(transmitter_pos, direction_normalized)
 
 
     print(f"Ray-casting from {transmitter_pos} to {receiver_pos}")
     print(f"Hit result: {hit}")
     hit_coords = None
-    if hit and obj:
-        print(f"Object hit: {obj.name} (type: {obj.type}) at location: {location}")
-        hit_coords = location
-    else:
-        print("No object hit, clear LOS")
-
 
 
     
     if hit:
-        if obj.type == 'MESH' and obj.name.split('.')[0] != ground_obj_name and obj.name != 'oti_layer':
-            print(f"LOS blocked by: {obj.name} at location {location}")
-#            create_debug_line(transmitter_pos, receiver_pos)
-#            highlight_coordinate(hit_coords)
-            return (False, hit_coords)
+#        print(f"obj.type={obj.type}, obj.name={obj.name}" )
+#        if obj.type == 'MESH' and 'ground' not in obj.name.split('.')[0] and obj.name != 'oti_layer':
+#            print(f"LOS blocked by: {obj.name} at location {location}")
+##            create_debug_line(transmitter_pos, receiver_pos)
+##            highlight_coordinate(hit_coords)
+        print("----------------------") 
+        return (False, hit_coords)
 
-        
+    print("----------------------")    
     return (True, hit_coords)
 
 
@@ -224,13 +239,59 @@ def interpolate_color(normalized_value):
 
     return interpolated_color
 
-#point = np.array([119.7, -95.079, 0])
-#point1  = np.array([186.58, -190.62, 0])
-#res, coord1 = is_los(transmitter_pos, point, "ground")
-#res1, coord2 = is_los(transmitter_pos, point1, "ground")
 
 
 lines = []
+
+
+
+def create_bvh_for_objects(obj_names):
+    """Creates a BVH tree for multiple objects by merging their meshes."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    combined_bm = bmesh.new()  # Create an empty BMesh
+
+    for obj in obj_names:
+        if obj is None:
+            print(f"Warning: Object '{obj_name}' not found!")
+            continue
+
+        obj_eval = obj.evaluated_get(depsgraph)
+
+        # Convert object to BMesh
+        bm = bmesh.new()
+        bm.from_object(obj_eval, depsgraph)
+        bm.verts.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+
+        if len(bm.faces) == 0:
+            print(f"Warning: Object '{obj_name}' has no faces!")
+
+        # Merge the BMesh into the combined mesh
+        bm.transform(obj.matrix_world)  # Apply world transformation
+        combined_bm.from_mesh(obj_eval.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph))
+        bm.free()  # Free individual BMesh
+
+    # Create a BVH tree from the merged BMesh
+    if len(combined_bm.faces) == 0:
+        print("Error: No faces found in any object, BVH tree cannot be built!")
+        return None
+
+    bvh_tree = BVHTree.FromBMesh(combined_bm)
+    combined_bm.free()
+    return bvh_tree
+
+
+obj = None
+collection_name = "OSM.001"
+hit_list = []
+for i in bpy.data.collections:
+    if 'building' in i.name:
+        for j in i.objects:
+            hit_list.append(j)
+            print(j)
+bvh = create_bvh_for_objects(hit_list)
+
+             
 
 with open(output_path, mode='w', newline='') as file:
     writer = csv.writer(file)
@@ -251,14 +312,54 @@ with open(output_path, mode='w', newline='') as file:
         
 
     for obj in obj_list:
-#        if obj.type == 'MESH' and 'ground' ==  obj.name:
+        if obj.type == 'MESH' and 'ground' ==  obj.name:
+
+            if not obj.data.vertex_colors:
+                obj.data.vertex_colors.new()
+
+            color_layer1 = obj.data.vertex_colors.get("SignalStrengthLayer"+str(obj.name)) or obj.data.vertex_colors.new(name="SignalStrengthLayer"+str(obj.name))
+            
+            color_layer2 = obj.data.vertex_colors.get("LOSLayer"+str(obj.name)) or obj.data.vertex_colors.new(name="LOSLayer"+str(obj.name))
+
+            # Iterate over the mesh vertices
+            for poly in obj.data.polygons:
+                for loop_index in poly.loop_indices:
+                    vertex_index = obj.data.loops[loop_index].vertex_index
+                    vertex = obj.data.vertices[vertex_index]
+                    vertex_pos = np.array(obj.matrix_world @ vertex.co)
+
+                    
+                    distance = np.linalg.norm(vertex_pos - transmitter_pos)
+                    
+                   
+                    los = is_los(transmitter_pos, vertex_pos, 'ground', bvh)
+                    
+                    
+                    
+                    pow = directional_gain(transmitter_pos, vertex_pos, transmitter_orientation, beamwidth)
+                    signal_strength = signal_strength_uma(distance, frequency, pow, los)
+
+                   
+                    min_signal = -100 
+                    max_signal = -40
+                    normalized_strength = (signal_strength - min_signal) / (max_signal - min_signal)
+                    normalized_strength = max(0, min(1, normalized_strength))
+                    
+                    color_layer1.data[loop_index].color = interpolate_color(normalized_strength)
+
+                    if los[0]:
+                        color_layer2.data[loop_index].color = (1, 0, 0, 1)
+                        lines.append(vertex_pos)
+                    else:
+                        color_layer2.data[loop_index].color = (0, 0, 1, 1)
+                    writer.writerow([str(obj.name)+str(vertex_pos), distance, signal_strength, normalized_strength, str(los)])
+        
+#        if obj.type == 'MESH' and 'oti_layer' ==  obj.name:
 
 #            if not obj.data.vertex_colors:
 #                obj.data.vertex_colors.new()
 
-#            color_layer1 = obj.data.vertex_colors.get("SignalStrengthLayer"+str(obj.name)) or obj.data.vertex_colors.new(name="SignalStrengthLayer"+str(obj.name))
-#            
-#            color_layer2 = obj.data.vertex_colors.get("LOSLayer"+str(obj.name)) or obj.data.vertex_colors.new(name="LOSLayer"+str(obj.name))
+#            color_layer3 = obj.data.vertex_colors.get("OTI"+str(obj.name)) or obj.data.vertex_colors.new(name="OTI"+str(obj.name))
 
 #            # Iterate over the mesh vertices
 #            for poly in obj.data.polygons:
@@ -272,70 +373,33 @@ with open(output_path, mode='w', newline='') as file:
 #                    
 #                   
 #                    los = is_los(transmitter_pos, vertex_pos, 'ground')
+#                    writer.writerow([1, 1, 1, 1, str(los)]) 
 #                    
-#                    
-#                    
-#                    pow = directional_gain(transmitter_pos, vertex_pos, transmitter_orientation, beamwidth)
-#                    signal_strength = signal_strength_uma(distance, frequency, pow, los)
+#                    if los[0] == False:
+#                        d2d = np.linalg.norm(transmitter_pos - los[1])
+#                        
+#                        pow = directional_gain(transmitter_pos, vertex_pos, transmitter_orientation, beamwidth)
+#                        signal_strength = signal_strength_oti(distance, frequency, pow, d2d)
 
-#                   
-#                    min_signal = -100 
-#                    max_signal = -40
-#                    normalized_strength = (signal_strength - min_signal) / (max_signal - min_signal)
-#                    normalized_strength = max(0, min(1, normalized_strength))
-#                    
-#                    color_layer1.data[loop_index].color = interpolate_color(normalized_strength)
+#                       
+#                        min_signal = -74 
+#                        max_signal = -67
+#                        normalized_strength = (signal_strength - min_signal) / (max_signal - min_signal)
+#                        normalized_strength = max(0, min(1, normalized_strength))
+#                        
+#                        color_layer3.data[loop_index].color = interpolate_color(normalized_strength)
 
-#                    if los[0]:
-#                        color_layer2.data[loop_index].color = (1, 0, 0, 1)
-#                        lines.append(vertex_pos)
-#                    else:
-#                        color_layer2.data[loop_index].color = (0, 0, 1, 1)
-#                    writer.writerow([str(obj.name)+str(vertex_pos), distance, signal_strength, normalized_strength, str(los)])
-#        
-        if obj.type == 'MESH' and 'oti_layer' ==  obj.name:
-
-            if not obj.data.vertex_colors:
-                obj.data.vertex_colors.new()
-
-            color_layer3 = obj.data.vertex_colors.get("OTI"+str(obj.name)) or obj.data.vertex_colors.new(name="OTI"+str(obj.name))
-
-            # Iterate over the mesh vertices
-            for poly in obj.data.polygons:
-                for loop_index in poly.loop_indices:
-                    vertex_index = obj.data.loops[loop_index].vertex_index
-                    vertex = obj.data.vertices[vertex_index]
-                    vertex_pos = np.array(obj.matrix_world @ vertex.co)
-
-                    
-                    distance = np.linalg.norm(vertex_pos - transmitter_pos)
-                    
-                   
-                    los = is_los(transmitter_pos, vertex_pos, 'ground')
-                    writer.writerow([1, 1, 1, 1, str(los)]) 
-                    
-                    if los[0] == False:
-                        d2d = np.linalg.norm(transmitter_pos - los[1])
-                        
-                        pow = directional_gain(transmitter_pos, vertex_pos, transmitter_orientation, beamwidth)
-                        signal_strength = signal_strength_oti(distance, frequency, pow, d2d)
-
-                       
-                        min_signal = -38 
-                        max_signal = -34
-                        normalized_strength = (signal_strength - min_signal) / (max_signal - min_signal)
-                        normalized_strength = max(0, min(1, normalized_strength))
-                        
-                        color_layer3.data[loop_index].color = interpolate_color(normalized_strength)
-
-                        writer.writerow([str(obj.name)+str(vertex_pos), distance, signal_strength, normalized_strength, str(los)])
-                        
-            
+#                        writer.writerow([str(obj.name)+str(vertex_pos), distance, signal_strength, normalized_strength, str(los)])
+#                        
+#            
 
 
-for i in lines:
-    create_debug_line(mathutils.Vector(transmitter_pos), mathutils.Vector(i))
+#for i in lines:
+#    create_debug_line(mathutils.Vector(transmitter_pos), mathutils.Vector(i))
 
+
+# Free memory
+#bm.free()
 
 highlight_coordinate(transmitter_pos, 0.3, (0, 0, 0))
 
