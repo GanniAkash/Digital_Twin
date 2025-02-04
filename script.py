@@ -11,22 +11,22 @@ output_path = bpy.path.abspath('//uma_signal_strength.csv')
 
 
 c = 3e8  # Speed of light (m/s)
-frequency = 2.5e9 # Frequency in Hz (example: 2.4 GHz for Wi-Fi)
+frequency = 5e9 # Frequency in Hz (example: 2.4 GHz for Wi-Fi)
 tx_pow = 35  # Transmitter (cell tower) gain in dBi
 rx_gain = 0  # Receiver (mobile) gain in dBi
-beamwidth = 30  # Antenna beamwidth in degrees
+beamwidth = 45  # Antenna beamwidth in degrees
 
 
-h_bs = 6  # Base station antenna height in meters
+h_bs = 10  # Base station antenna height in meters
 h_ut = 1.5  # User terminal (receiver) antenna height in meters
 distance_breakpoint = 4 * h_bs * h_ut * frequency / c  # Breakpoint distance
 
 
-transmitter_pos = np.array([138, -33, h_bs])
+transmitter_pos = np.array([-641.09, -33.909, h_bs])
 
 
 
-transmitter_orientation = np.array([119.7, -95.079, 0])
+transmitter_orientation = np.array([-89.307, -161.96, 0])
 
 
 def clear_previous_debug_lines(name):
@@ -104,11 +104,12 @@ def signal_strength_uma(distance, frequency, pow, los=True):
     return received_power
 
 def signal_strength_oti(distance, frequency, pow, d2d):
-    s_uma = signal_strength_uma(distance, frequency, False)
+    s_uma = signal_strength_uma(distance, frequency, pow,  False)
     
-    pow = (0.5*d2d) + 20 + s_uma
     
-    return pow
+    res = (0.5*d2d) + 20 + s_uma
+    print(s_uma, '\t', distance, 't', frequency, 't', pow, 't', res,'t', d2d)
+    return res
 
 
 
@@ -158,12 +159,11 @@ def is_los(transmitter_pos, receiver_pos, ground_obj_name, bvh):
 #        depsgraph, transmitter_pos, direction_normalized, distance=distance
 #    )
     
-    hit, location, normal, index = bvh.ray_cast(transmitter_pos, direction_normalized)
+    hit, normal, index, distance = bvh.ray_cast(transmitter_pos, direction_normalized)
 
 
-    print(f"Ray-casting from {transmitter_pos} to {receiver_pos}")
-    print(f"Hit result: {hit}")
-    hit_coords = None
+#    print(f"Ray-casting from {transmitter_pos} to {receiver_pos}")
+#    print(f"Hit result: {hit}")
 
 
     
@@ -173,11 +173,9 @@ def is_los(transmitter_pos, receiver_pos, ground_obj_name, bvh):
 #            print(f"LOS blocked by: {obj.name} at location {location}")
 ##            create_debug_line(transmitter_pos, receiver_pos)
 ##            highlight_coordinate(hit_coords)
-        print("----------------------") 
-        return (False, hit_coords)
+        return (False, hit)
 
-    print("----------------------")    
-    return (True, hit_coords)
+    return (True, hit)
 
 
 def create_debug_line(start, end):
@@ -354,52 +352,66 @@ with open(output_path, mode='w', newline='') as file:
                         color_layer2.data[loop_index].color = (0, 0, 1, 1)
                     writer.writerow([str(obj.name)+str(vertex_pos), distance, signal_strength, normalized_strength, str(los)])
         
-#        if obj.type == 'MESH' and 'oti_layer' ==  obj.name:
+        if obj.type == 'MESH' and 'oti_layer' ==  obj.name:
 
-#            if not obj.data.vertex_colors:
-#                obj.data.vertex_colors.new()
+            if not obj.data.vertex_colors:
+                obj.data.vertex_colors.new()
 
-#            color_layer3 = obj.data.vertex_colors.get("OTI"+str(obj.name)) or obj.data.vertex_colors.new(name="OTI"+str(obj.name))
+            color_layer3 = obj.data.vertex_colors.get("OTI"+str(obj.name)) or obj.data.vertex_colors.new(name="OTI"+str(obj.name))
+            
+            min_signal = math.inf 
+            max_signal = -math.inf
+            
+            store = {}
 
-#            # Iterate over the mesh vertices
-#            for poly in obj.data.polygons:
-#                for loop_index in poly.loop_indices:
-#                    vertex_index = obj.data.loops[loop_index].vertex_index
-#                    vertex = obj.data.vertices[vertex_index]
-#                    vertex_pos = np.array(obj.matrix_world @ vertex.co)
+            # Iterate over the mesh vertices
+            for poly in obj.data.polygons:
+                for loop_index in poly.loop_indices:
+                    vertex_index = obj.data.loops[loop_index].vertex_index
+                    vertex = obj.data.vertices[vertex_index]
+                    vertex_pos = np.array(obj.matrix_world @ vertex.co)
 
-#                    
-#                    distance = np.linalg.norm(vertex_pos - transmitter_pos)
-#                    
-#                   
-#                    los = is_los(transmitter_pos, vertex_pos, 'ground')
-#                    writer.writerow([1, 1, 1, 1, str(los)]) 
-#                    
-#                    if los[0] == False:
-#                        d2d = np.linalg.norm(transmitter_pos - los[1])
-#                        
-#                        pow = directional_gain(transmitter_pos, vertex_pos, transmitter_orientation, beamwidth)
-#                        signal_strength = signal_strength_oti(distance, frequency, pow, d2d)
+                    
+                    distance = np.linalg.norm(vertex_pos - transmitter_pos)
+                    
+                   
+                    los = is_los(transmitter_pos, vertex_pos, 'ground', bvh)
+                    writer.writerow([1, 1, 1, 1, str(los)]) 
+                    
+                    if los[0] == False:
+                        t1 = transmitter_pos
+                        t1[2] = 0
+                        t2 = los[1]
+                        t2[2] = 0
+                        d2d = np.linalg.norm(t1 - t2)
+                        
+                        pow = directional_gain(transmitter_pos, vertex_pos, transmitter_orientation, beamwidth)
+                        signal_strength = signal_strength_oti(distance, frequency, pow, d2d)
 
-#                       
-#                        min_signal = -74 
-#                        max_signal = -67
-#                        normalized_strength = (signal_strength - min_signal) / (max_signal - min_signal)
-#                        normalized_strength = max(0, min(1, normalized_strength))
-#                        
-#                        color_layer3.data[loop_index].color = interpolate_color(normalized_strength)
-
-#                        writer.writerow([str(obj.name)+str(vertex_pos), distance, signal_strength, normalized_strength, str(los)])
-#                        
-#            
+                       
+                        if signal_strength > max_signal:
+                            max_signal = signal_strength
+                        if signal_strength < min_signal:
+                            min_signal = signal_strength
+                        
+                        store[loop_index] = signal_strength
+            
+            max_signal = sorted(store.values())[-1]
+            print(f'Max: {max_signal}, Min: {min_signal}')
+            for (key, val) in store.items():
+                normalized_strength = (val - min_signal) / (max_signal - min_signal)
+                normalized_strength = max(0, min(1, normalized_strength))
+                        
+                color_layer3.data[key].color = interpolate_color(normalized_strength)
+                        
+                writer.writerow([str(obj.name)+str(vertex_pos), distance, signal_strength, normalized_strength, str(los)])
+                        
+            
 
 
 #for i in lines:
 #    create_debug_line(mathutils.Vector(transmitter_pos), mathutils.Vector(i))
 
-
-# Free memory
-#bm.free()
 
 highlight_coordinate(transmitter_pos, 0.3, (0, 0, 0))
 
